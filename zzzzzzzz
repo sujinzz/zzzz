@@ -1,0 +1,205 @@
+import glob
+from torch.utils.data.dataset import Dataset 
+from torchvision import transforms
+from PIL import Image
+import os.path as osp
+import glob
+import torch
+import torchvision
+import torchvision.transforms as transforms
+#torch.cuda.set_device(2)
+#device=torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+from torchvision.datasets import ImageFolder
+from matplotlib import pyplot as plt
+# get all the image and mask path and number of images
+folder_data = glob.glob("C:/Users/tjdnf/Desktop/JPGCN/clean/*.jpg")
+folder_mask = glob.glob("C:/Users/tjdnf/Desktop/JPGCN/noisy/*.jpg")
+
+# split these path using a certain percentage
+len_data = len(folder_data)
+
+train_size = 0.8
+
+train_image_paths = folder_data[:int(len_data*train_size)]
+test_image_paths = folder_data[int(len_data*train_size):]
+
+train_mask_paths = folder_mask[:int(len_data*train_size)]
+test_mask_paths = folder_mask[int(len_data*train_size):]
+
+
+class CustomDataset(Dataset):
+    def __init__(self, image_paths, target_paths, train=True):# initial logic happens like transform
+        self.image_paths = image_paths
+        self.target_paths = target_paths
+        self.transforms = transforms.ToTensor()
+
+    def __getitem__(self, index):
+
+        image = Image.open(self.image_paths[index])
+        mask = Image.open(self.target_paths[index])
+        t_image = self.transforms(image)
+        t_mask = self.transforms(mask)
+        return t_image, t_mask
+
+    def __len__(self):  # return count of sample we have
+        return len(self.image_paths)
+
+train_dataset = CustomDataset(train_image_paths, train_mask_paths, train=True)
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False, num_workers=0)
+
+test_dataset = CustomDataset(test_image_paths, test_mask_paths, train=False)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=0)
+print(len(test_dataset))
+print(len(train_dataset))
+train_dataloader= iter(train_loader)
+sample = next(train_dataloader)
+import matplotlib.pyplot as plt
+from matplotlib import pyplot
+pyplot.subplot(1,2,1)
+pyplot.imshow(sample[0][0][0,:,:],cmap='gray')
+pyplot.subplot(1,2,2)
+pyplot.imshow(sample[1][0][0,:,:],cmap='gray')
+pyplot.show()
+import torch.nn as nn
+import torch.nn.functional as F
+import pytorch_prototyping as util
+
+# net = Net()
+net = util.Unet(in_channels=1,
+                 out_channels=1,
+                 nf0=32,
+                 num_down=5,
+                 max_channels=512,
+                 use_dropout=True,
+                 upsampling_mode='transpose',
+                 dropout_prob=0.2,
+                 norm=nn.BatchNorm2d,
+                 outermost_linear=True)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+net.to(device)
+import torch.optim as optim
+
+criterion = nn.MSELoss()
+# optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+optimizer = optim.Adam(net.parameters(), lr=0.001)
+# optimizer = optim.RMSprop(net.parameters(), lr=0.001)
+%%time
+for epoch in range(50):
+    # loop over the dataset multiple times
+    running_loss = 0.0
+    train_dataloader= iter(train_loader)
+    for i, data in enumerate(train_dataloader, 0):
+        clean_inputs, noise_inputs = data
+        clean_inputs, noise_inputs = clean_inputs.cuda(),noise_inputs.cuda()
+        
+        optimizer.zero_grad()
+#         # forward + backward + optimize
+        outputs = net(noise_inputs)
+        outputs = torch.clamp(outputs/2 + .5, 0, 1)
+        loss = criterion(outputs, clean_inputs)
+        loss.backward()
+        optimizer.step()
+
+        # print statistics
+        running_loss += loss.item()
+        if i % 500 == 499:    # print every 500 mini-batches
+            print('[%d, %5d] loss: %.5f' %
+                  (epoch + 1, i + 1, running_loss / 500))
+            running_loss = 0.0
+
+print('Finished Training')
+torch.save(net.state_dict(), 'weights_only_gamma_noise.pth')
+testdataloader = iter(test_loader)
+testdataloader = iter(test_loader)
+sample = next(testdataloader)
+clean_inputs, noise_inputs = sample
+print(type(noise_inputs))
+print(noise_inputs.shape)
+clean_inputs, noise_inputs = clean_inputs.cpu(),noise_inputs.cuda()
+pred = net(noise_inputs)
+plt.imshow(pred.detach().cpu()[0,0],cmap='gray')
+plt.imshow(clean_inputs.detach().cpu()[0,0],cmap='gray')
+im1=clean_inputs.detach().cpu()[0,0]
+#im1 = im1.save("geeks.jpg")
+
+print(type(noise_inputs.cpu()[0,0]))
+print(noise_inputs.cpu()[0,0].size)
+plt.imshow(noise_inputs.detach().cpu()[0,0],cmap='gray')
+# pred2 = net(noise_inputs)
+# plt.imshow(pred2.detach().cpu()[0,0],cmap='gray')
+from torchvision.utils import save_image
+save_image(noise_inputs.cpu()[0,0], 'gamma_updated_noise.jpg')
+save_image(clean_inputs.detach().cpu()[0,0], 'gamma_updated_clean.jpg')
+save_image(pred.detach().cpu(), 'gamma_updated_predicted.jpg')
+import cv2
+im_clean=cv2.imread('gamma_updated_clean.jpg')
+im_noisy=cv2.imread('gamma_updated_noise.jpg')
+im_pred=cv2.imread('gamma_updated_predicted.jpg')
+from skimage.metrics import structural_similarity as ssim
+ssim_const = ssim(im_clean, im_pred,data_range=im_pred.max() - im_pred.min(),multichannel=True)
+print(f"SSIM value for clean image and predicted image is {ssim_const}")
+ssim_const1 = ssim(im_clean, im_noisy,data_range=im_noisy.max() - im_noisy.min(),multichannel=True)
+print(f"SSIM value for clean image and noisy image is {ssim_const1}")
+import numpy as np
+from math import log10, sqrt
+def PSNR(original, compressed):
+    mse = np.mean((original - compressed) ** 2)
+    if(mse == 0):  # MSE is zero means no noise is present in the signal .
+                  # Therefore PSNR have no importance.
+        return 100
+    max_pixel = 255.0
+    psnr = 20 * log10(max_pixel / sqrt(mse))
+    return psnr
+value = PSNR(im_clean, im_pred)
+print(f"PSNR value for clean image and predicted image is {value} dB")
+value1 = PSNR(im_clean, im_noisy)
+print(f"PSNR value for clean image and nosiy image is {value1} dB")
+Y = np.square(np.subtract(im_clean,im_pred)).mean()
+print("MSE:", Y)
+pyplot.subplot(2,2,1)
+pyplot.imshow(clean_inputs.detach().cpu()[0,0],cmap='gray')
+pyplot.subplot(2,2,2)
+pyplot.imshow(noise_inputs.detach().cpu()[0,0],cmap='gray')
+pyplot.subplot(2,2,3)
+pyplot.imshow(pred.detach().cpu()[0,0],cmap='gray')
+pyplot.show()
+sample = next(testdataloader)
+clean_inputs, noise_inputs = sample
+print(type(noise_inputs))
+print(noise_inputs.shape)
+clean_inputs, noise_inputs = clean_inputs.cpu(),noise_inputs.cuda()
+pred = net(noise_inputs)
+plt.imshow(pred.detach().cpu()[0,0],cmap='gray')
+plt.imshow(clean_inputs.detach().cpu()[0,0],cmap='gray')
+im1=clean_inputs.detach().cpu()[0,0]
+#im1 = im1.save("geeks.jpg")
+print(type(noise_inputs.cpu()[0,0]))
+print(noise_inputs.cpu()[0,0].size)
+plt.imshow(noise_inputs.detach().cpu()[0,0],cmap='gray')
+from torchvision.utils import save_image
+save_image(noise_inputs.cpu()[0,0], 'gamma_updated_noise2.jpg')
+save_image(clean_inputs.detach().cpu()[0,0], 'gamma_updated_clean2.jpg')
+save_image(pred.detach().cpu(), 'gamma_updated_predicted2.jpg')
+
+im_clean2=cv2.imread('gamma_updated_clean2.jpg')
+im_noisy2=cv2.imread('gamma_updated_noise2.jpg')
+im_pred2=cv2.imread('gamma_updated_predicted2.jpg')
+from skimage.metrics import structural_similarity as ssim
+ssim_const = ssim(im_clean2, im_pred2,data_range=im_pred2.max() - im_pred2.min(),multichannel=True)
+print(f"SSIM value for clean image and predicted image is {ssim_const}")
+ssim_const1 = ssim(im_clean2, im_noisy2,data_range=im_noisy2.max() - im_noisy2.min(),multichannel=True)
+print(f"SSIM value for clean image and noisy image is {ssim_const1}")
+value = PSNR(im_clean2, im_pred2)
+print(f"PSNR value for clean image and predicted image is {value} dB")
+
+value1 = PSNR(im_clean2, im_noisy2)
+print(f"PSNR value for clean image and nosiy image is {value1} dB")
+Y = np.square(np.subtract(im_clean,im_pred)).mean()
+print("MSE:", Y)
+pyplot.subplot(2,2,1)
+pyplot.imshow(clean_inputs.detach().cpu()[0,0],cmap='gray')
+pyplot.subplot(2,2,2)
+pyplot.imshow(noise_inputs.detach().cpu()[0,0],cmap='gray')
+pyplot.subplot(2,2,3)
+pyplot.imshow(pred.detach().cpu()[0,0],cmap='gray')
+pyplot.show()
